@@ -1,0 +1,1848 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>Майнкрафт</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; touch-action: none; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #000;
+               font-family: Arial, sans-serif; user-select: none; }
+  #game { display: block; width: 100%; height: 100%; }
+  #hint { position: absolute; top: 8px; left: 50%; transform: translateX(-50%);
+          color: #fff; font-size: 14px; text-shadow: 2px 2px 0 #000;
+          pointer-events: none; }
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<div id="hint">Minecraft — браузерная версия</div>
+
+<script>
+// ============ КОНСТАНТЫ ============
+const TILE = 40;
+const MAP_W = 100, MAP_H = 100;
+const INV_SLOTS = 20;
+const MAX_STACK = 64;
+const MAX_WORLDS = 3;
+const DAY_LENGTH = 3600; // кадров
+
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+let SCREEN_W, SCREEN_H;
+
+function resize() {
+  SCREEN_W = canvas.width = window.innerWidth;
+  SCREEN_H = canvas.height = window.innerHeight;
+}
+window.addEventListener('resize', resize);
+resize();
+
+// ============ БЛОКИ ============
+const BLOCKS = {
+  air:      { name: 'Воздух',  color: null,            solid: false },
+  bedrock:  { name: 'Бедрок',  color: '#0f0f0f',       solid: true, unbreakable: true },
+  stone:    { name: 'Камень',  color: '#8c8c8c',       spot: '#505050' },
+  planks:   { name: 'Доски',   color: '#dec89b',       line: '#966e46' },
+  log:      { name: 'Бревно',  color: '#78502d',       stripe: '#4b2d19' },
+  grass:    { name: 'Трава',   color: '#5f9f35',       dirt: '#78502d' },
+  dirt:     { name: 'Земля',   color: '#78502d',       spot: '#55371e' },
+  sand:     { name: 'Песок',   color: '#e6d796',       spot: '#c8b978' },
+  cobble:   { name: 'Булыжник',color: '#787878',       spot: '#505050' },
+  craft:    { name: 'Верстак', color: '#a06e3c',       line: '#644628' },
+  chest:    { name: 'Сундук',  color: '#965f28',       line: '#5a3719' },
+  bricks:   { name: 'Кирпичи', color: '#aa463c',       line: '#c8c8be' },
+  glass:    { name: 'Стекло',  color: '#c8e6f0',       line: '#ffffff' },
+  coal_ore: { name: 'Уголь',   color: '#828282',       spot: '#191919' },
+  iron_ore: { name: 'Железо',  color: '#828282',       spot: '#c8a078' },
+  gold_ore: { name: 'Золото',  color: '#828282',       spot: '#f0c83c' },
+  diamond_ore:{ name:'Алмаз',  color: '#828282',       spot: '#5adce6' },
+  leaves:   { name: 'Листва',  color: '#3c8232',       spot: '#286423' },
+  water:    { name: 'Вода',    color: '#3c78dc',       line: '#64a0f0', solid: false },
+  lava:     { name: 'Лава',    color: '#dc5014',       line: '#ffa028' },
+  snow:     { name: 'Снег',    color: '#f5f5ff',       spot: '#c8d2e6' },
+  ice:      { name: 'Лёд',     color: '#96d2f0',       line: '#c8f0ff' },
+  obsidian: { name: 'Обсидиан',color: '#1e142d',       spot: '#3c2850' },
+  bed:      { name: 'Кровать', color: '#c83232',       line: '#f0f0f0' },
+};
+
+const TOOLS = {
+  diamond_pickaxe: { name: 'Алмазная кирка' },
+  iron_shovel:     { name: 'Лопата' },
+  diamond_sword:   { name: 'Алмазный меч' },
+  diamond_axe:     { name: 'Алмазный топор' },
+  wood_sword:      { name: 'Деревянный меч' },
+  bow:             { name: 'Лук' },
+  stick:           { name: 'Палка' },
+  arrow:           { name: 'Стрела' },
+  gunpowder:       { name: 'Порох' },
+};
+
+const DAMAGE = {
+  diamond_sword: 4, wood_sword: 2,
+  diamond_axe: 3, diamond_pickaxe: 2,
+  iron_shovel: 1, bow: 0
+};
+const HAND_DAMAGE = 1;
+const ZOMBIE_DAMAGE = 2;
+const ARROW_DAMAGE = 1;
+const CREEPER_DAMAGE = 16;
+
+const RECIPES = [
+  { in: { log: 1 },                 out: { planks: 4 } },
+  { in: { planks: 2 },              out: { stick: 4 } },
+  { in: { planks: 4 },              out: { craft: 1 } },
+  { in: { stick: 3, planks: 3 },    out: { bow: 1 } },
+  { in: { stick: 1 },               out: { arrow: 4 } },
+  { in: { planks: 4, stone: 2 },    out: { chest: 1 } },
+  { in: { sand: 2, coal_ore: 1 },   out: { glass: 4 } },
+  { in: { stone: 4 },               out: { bricks: 2 } },
+];
+
+// ============ ИНВЕНТАРЬ ============
+class Inventory {
+  constructor() {
+    this.slots = new Array(INV_SLOTS).fill(null);
+    this.slots[0] = { id: 'stone', count: 64 };
+    this.slots[1] = { id: 'planks', count: 64 };
+    this.slots[2] = { id: 'log', count: 64 };
+    this.slots[3] = { id: 'diamond_pickaxe', count: 1 };
+    this.slots[4] = { id: 'iron_shovel', count: 1 };
+    this.slots[5] = { id: 'diamond_sword', count: 1 };
+    this.slots[6] = { id: 'diamond_axe', count: 1 };
+    this.slots[7] = { id: 'bow', count: 1 };
+    this.slots[8] = { id: 'arrow', count: 32 };
+    this.slots[9] = { id: 'chest', count: 3 };
+    this.selected = 0;
+    this.open = false;
+  }
+  add(id, count = 1) {
+    for (const s of this.slots) {
+      if (s && s.id === id && s.count < MAX_STACK) {
+        const a = Math.min(MAX_STACK - s.count, count);
+        s.count += a; count -= a;
+        if (count <= 0) return true;
+      }
+    }
+    for (let i = 0; i < this.slots.length; i++) {
+      if (this.slots[i] === null) {
+        const p = Math.min(MAX_STACK, count);
+        this.slots[i] = { id, count: p };
+        count -= p;
+        if (count <= 0) return true;
+      }
+    }
+    return count === 0;
+  }
+  removeOne(id) {
+    for (let i = 0; i < this.slots.length; i++) {
+      const s = this.slots[i];
+      if (s && s.id === id) {
+        s.count--;
+        if (s.count <= 0) this.slots[i] = null;
+        return true;
+      }
+    }
+    return false;
+  }
+  count(id) {
+    let n = 0;
+    for (const s of this.slots) if (s && s.id === id) n += s.count;
+    return n;
+  }
+  toJSON() { return this.slots; }
+  static fromJSON(d) {
+    const inv = new Inventory();
+    inv.slots = d;
+    return inv;
+  }
+}
+
+// ============ СУНДУК ============
+class Chest {
+  constructor(x, y) {
+    this.x = x; this.y = y;
+    this.slots = new Array(27).fill(null);
+  }
+  add(id, count = 1) {
+    for (const s of this.slots) {
+      if (s && s.id === id && s.count < MAX_STACK) {
+        const a = Math.min(MAX_STACK - s.count, count);
+        s.count += a; count -= a;
+        if (count <= 0) return true;
+      }
+    }
+    for (let i = 0; i < this.slots.length; i++) {
+      if (this.slots[i] === null) {
+        const p = Math.min(MAX_STACK, count);
+        this.slots[i] = { id, count: p };
+        count -= p;
+        if (count <= 0) return true;
+      }
+    }
+    return count === 0;
+  }
+  toJSON() { return { x: this.x, y: this.y, slots: this.slots }; }
+  static fromJSON(d) {
+    const c = new Chest(d.x, d.y);
+    c.slots = d.slots || new Array(27).fill(null);
+    return c;
+  }
+}
+
+// ============ МОБЫ ============
+class Sheep {
+  constructor(x, y) {
+    this.x = x; this.y = y; this.hp = 8;
+    this.hurt = 0; this.dir = 1; this.timer = 60 + Math.random() * 120;
+  }
+  update(world, px, py) {
+    if (this.hurt > 0) this.hurt--;
+    if (--this.timer <= 0) {
+      this.timer = 90 + Math.random() * 150;
+      if (Math.random() < 0.5) {
+        const nx = this.x + (Math.random() < 0.5 ? -1 : 1);
+        this.dir = nx > this.x ? 1 : -1;
+        if (nx >= 0 && nx < MAP_W && world.grid[this.y][nx] === 'air'
+            && world.grid[this.y+1][nx] !== 'air') this.x = nx;
+      }
+    }
+  }
+  toJSON() { return { x: this.x, y: this.y, hp: this.hp }; }
+  static fromJSON(d) { const s = new Sheep(d.x, d.y); s.hp = d.hp; return s; }
+}
+
+class Zombie {
+  constructor(x, y) {
+    this.x = x; this.y = y; this.hp = 20;
+    this.hurt = 0; this.timer = 0; this.cd = 0; this.burn = 0;
+  }
+  update(world, px, py, isDay) {
+    if (this.hurt > 0) this.hurt--;
+    if (this.cd > 0) this.cd--;
+    if (isDay) {
+      this.burn++;
+      if (this.burn >= 60) { this.burn = 0; this.hp -= 2; }
+    } else this.burn = 0;
+    const dx = px - this.x, dy = py - this.y;
+    const dist = Math.abs(dx) + Math.abs(dy);
+    if (dist <= 25 && dist > 1) {
+      if (this.timer > 0) { this.timer--; return; }
+      this.timer = 18;
+      if (Math.abs(dx) > Math.abs(dy)) {
+        const nx = this.x + (dx > 0 ? 1 : -1);
+        if (nx >= 0 && nx < MAP_W && world.grid[this.y][nx] === 'air') this.x = nx;
+      } else {
+        const ny = this.y + (dy > 0 ? 1 : -1);
+        if (ny >= 0 && ny < MAP_H && world.grid[ny][this.x] === 'air'
+            && world.grid[ny+1][this.x] !== 'air') this.y = ny;
+      }
+    }
+  }
+  toJSON() { return { x: this.x, y: this.y, hp: this.hp }; }
+  static fromJSON(d) { const z = new Zombie(d.x, d.y); z.hp = d.hp; return z; }
+}
+
+class Skeleton {
+  constructor(x, y) {
+    this.x = x; this.y = y; this.hp = 16;
+    this.hurt = 0; this.cd = 60 + Math.random() * 120;
+  }
+  update(world, px, py, arrows) {
+    if (this.hurt > 0) this.hurt--;
+    if (--this.cd <= 0) {
+      const dist = Math.abs(px - this.x) + Math.abs(py - this.y);
+      if (dist <= 18) {
+        arrows.push(new Arrow(this.x, this.y, px, py, true));
+        this.cd = 100;
+      } else this.cd = 40;
+    }
+  }
+  toJSON() { return { x: this.x, y: this.y, hp: this.hp }; }
+  static fromJSON(d) { const s = new Skeleton(d.x, d.y); s.hp = d.hp; return s; }
+}
+
+class Creeper {
+  constructor(x, y) {
+    this.x = x; this.y = y; this.hp = 20;
+    this.hurt = 0; this.timer = 0; this.fuse = -1; this.exploded = false;
+  }
+  update(world, px, py) {
+    if (this.hurt > 0) this.hurt--;
+    const dist = Math.abs(px - this.x) + Math.abs(py - this.y);
+    if (this.fuse < 0 && dist <= 2) this.fuse = 40;
+    if (this.fuse > 0) { this.fuse--; return; }
+    if (this.fuse === 0) { this.exploded = true; return; }
+    if (dist <= 20 && dist > 1) {
+      if (this.timer > 0) { this.timer--; return; }
+      this.timer = 16;
+      const dx = px - this.x, dy = py - this.y;
+      if (Math.abs(dx) > Math.abs(dy)) {
+        const nx = this.x + (dx > 0 ? 1 : -1);
+        if (nx >= 0 && nx < MAP_W && world.grid[this.y][nx] === 'air') this.x = nx;
+      } else {
+        const ny = this.y + (dy > 0 ? 1 : -1);
+        if (ny >= 0 && ny < MAP_H && world.grid[ny][this.x] === 'air'
+            && world.grid[ny+1][this.x] !== 'air') this.y = ny;
+      }
+    }
+  }
+  toJSON() { return { x: this.x, y: this.y, hp: this.hp }; }
+  static fromJSON(d) { const c = new Creeper(d.x, d.y); c.hp = d.hp; return c; }
+}
+
+class Arrow {
+  constructor(x, y, tx, ty, hostile) {
+    this.fx = x; this.fy = y;
+    const dx = tx - x, dy = ty - y;
+    const d = Math.max(1, Math.hypot(dx, dy));
+    this.vx = dx / d * 0.35;
+    this.vy = dy / d * 0.35;
+    this.life = 100;
+    this.hostile = hostile;
+  }
+  update() { this.fx += this.vx; this.fy += this.vy; this.life--; }
+  toJSON() { return { fx: this.fx, fy: this.fy, vx: this.vx, vy: this.vy, life: this.life, hostile: this.hostile }; }
+  static fromJSON(d) {
+    const a = new Arrow(0, 0, 0, 0, d.hostile);
+    a.fx = d.fx; a.fy = d.fy; a.vx = d.vx; a.vy = d.vy; a.life = d.life;
+    return a;
+  }
+}
+
+// ============ МИР ============
+class World {
+  constructor(name = 'Новый мир') {
+    this.name = name;
+    this.grid = Array.from({ length: MAP_H }, () => new Array(MAP_W).fill('air'));
+    for (let x = 0; x < MAP_W; x++) {
+      this.grid[MAP_H-1][x] = 'bedrock';
+      this.grid[MAP_H-2][x] = 'stone';
+    }
+    for (let x = 0; x < MAP_W; x++) {
+      const h = MAP_H - 3 - Math.floor(Math.random() * 4);
+      for (let y = h; y < MAP_H - 2; y++) {
+        if (this.grid[y][x] === 'air') {
+          this.grid[y][x] = ['dirt', 'stone', 'grass'][Math.floor(Math.random()*3)];
+        }
+      }
+      if (h >= 0 && h < MAP_H) this.grid[h][x] = 'grass';
+    }
+    // деревья
+    for (let i = 0; i < 15; i++) {
+      const tx = 2 + Math.floor(Math.random() * (MAP_W - 5));
+      const ty = 5 + Math.floor(Math.random() * (MAP_H - 15));
+      if (this.grid[ty][tx] === 'grass') {
+        this.grid[ty-1][tx] = 'log';
+        this.grid[ty-2][tx] = 'log';
+        this.grid[ty-3][tx] = 'leaves';
+        this.grid[ty-3][tx-1] = 'leaves';
+        this.grid[ty-3][tx+1] = 'leaves';
+        this.grid[ty-2][tx-1] = 'leaves';
+        this.grid[ty-2][tx+1] = 'leaves';
+      }
+    }
+    // руды
+    for (let i = 0; i < 40; i++) {
+      const rx = 2 + Math.floor(Math.random() * (MAP_W-5));
+      const ry = MAP_H - 15 + Math.floor(Math.random() * 11);
+      if (this.grid[ry][rx] === 'stone' || this.grid[ry][rx] === 'dirt') {
+        this.grid[ry][rx] = ['coal_ore','coal_ore','iron_ore','iron_ore','gold_ore','diamond_ore'][Math.floor(Math.random()*6)];
+      }
+    }
+    // снег на горах
+    for (let x = 0; x < MAP_W; x++) {
+      for (let y = 3; y < 10; y++) {
+        if (this.grid[y][x] === 'grass') { this.grid[y][x] = 'snow'; break; }
+      }
+    }
+
+    this.playerX = Math.floor(MAP_W / 2);
+    this.playerY = 5;
+    while (this.playerY < MAP_H - 2 && this.grid[this.playerY+1][this.playerX] === 'air') this.playerY++;
+    this.playerY--;
+
+    this.inventory = new Inventory();
+    this.cameraX = 0; this.cameraY = 0;
+    this.hp = 20; this.maxHp = 20;
+    this.tick = 0;
+    this.hurtFlash = 0; this.invuln = 0; this.hitAnim = 0;
+    this.playerDir = 1;
+
+    this.sheep = [];
+    this.zombies = [];
+    this.skeletons = [];
+    this.creepers = [];
+    this.arrows = [];
+    this.explosions = [];
+    this.chests = {};
+
+    for (let i = 0; i < 4; i++) this.spawnSheep();
+    this.timeOfDay = 0.25;
+
+    // стартовый сундук
+    const cx = this.playerX + 2;
+    let cy = this.playerY;
+    while (cy < MAP_H - 1 && this.grid[cy][cx] === 'air') cy++;
+    cy--;
+    if (cy >= 0 && cy < MAP_H && this.grid[cy][cx] === 'air') {
+      this.grid[cy][cx] = 'chest';
+      this.chests[cx + ',' + cy] = new Chest(cx, cy);
+      this.chests[cx + ',' + cy].add('planks', 32);
+      this.chests[cx + ',' + cy].add('stone', 64);
+    }
+  }
+
+  findGround() {
+    for (let i = 0; i < 80; i++) {
+      const x = 3 + Math.floor(Math.random() * (MAP_W - 6));
+      for (let y = 5; y < MAP_H - 2; y++) {
+        if (this.grid[y][x] === 'air' && this.grid[y+1][x] !== 'air') return [x, y];
+      }
+    }
+    return [Math.floor(MAP_W/2), 5];
+  }
+  spawnSheep() { const [x, y] = this.findGround(); this.sheep.push(new Sheep(x, y)); }
+
+  spawnNightMobs() {
+    const trySpawn = (arr, max, chance, distMin, distMax) => {
+      if (arr.length >= max || Math.random() >= chance) return;
+      for (let i = 0; i < 20; i++) {
+        const [x, y] = this.findGround();
+        const d = Math.abs(x - this.playerX) + Math.abs(y - this.playerY);
+        if (d > distMin && d < distMax) { arr.push({ x, y }); break; }
+      }
+    };
+    if (this.zombies.length < 6 && Math.random() < 0.05) {
+      for (let i = 0; i < 20; i++) {
+        const [x, y] = this.findGround();
+        const d = Math.abs(x - this.playerX) + Math.abs(y - this.playerY);
+        if (d > 8 && d < 25) { this.zombies.push(new Zombie(x, y)); break; }
+      }
+    }
+    if (this.skeletons.length < 4 && Math.random() < 0.03) {
+      for (let i = 0; i < 20; i++) {
+        const [x, y] = this.findGround();
+        const d = Math.abs(x - this.playerX) + Math.abs(y - this.playerY);
+        if (d > 10 && d < 25) { this.skeletons.push(new Skeleton(x, y)); break; }
+      }
+    }
+    if (this.creepers.length < 3 && Math.random() < 0.02) {
+      for (let i = 0; i < 20; i++) {
+        const [x, y] = this.findGround();
+        const d = Math.abs(x - this.playerX) + Math.abs(y - this.playerY);
+        if (d > 10 && d < 25) { this.creepers.push(new Creeper(x, y)); break; }
+      }
+    }
+  }
+
+  isDay() { return this.timeOfDay > 0.2 && this.timeOfDay < 0.8; }
+  darkness() {
+    const t = this.timeOfDay;
+    if (t < 0.1) return 0;
+    if (t < 0.2) return (0.2 - t) * 10;
+    if (t < 0.3) return Math.max(0, (t - 0.2) * 5);
+    if (t < 0.7) return 0;
+    if (t < 0.8) return (t - 0.7) * 5;
+    if (t < 0.9) return 0.5;
+    return Math.min(1, (1 - t) * 10);
+  }
+
+  toJSON() {
+    return {
+      name: this.name, grid: this.grid,
+      px: this.playerX, py: this.playerY,
+      inv: this.inventory.toJSON(),
+      sheep: this.sheep.map(s => s.toJSON()),
+      zombies: this.zombies.map(z => z.toJSON()),
+      skeletons: this.skeletons.map(s => s.toJSON()),
+      creepers: this.creepers.map(c => c.toJSON()),
+      arrows: this.arrows.map(a => a.toJSON()),
+      chests: Object.values(this.chests).map(c => c.toJSON()),
+      hp: this.hp, time: this.timeOfDay,
+    };
+  }
+  static fromJSON(d) {
+    const w = Object.create(World.prototype);
+    w.name = d.name; w.grid = d.grid;
+    w.playerX = d.px; w.playerY = d.py;
+    w.inventory = Inventory.fromJSON(d.inv);
+    w.sheep = (d.sheep || []).map(Sheep.fromJSON);
+    w.zombies = (d.zombies || []).map(Zombie.fromJSON);
+    w.skeletons = (d.skeletons || []).map(Skeleton.fromJSON);
+    w.creepers = (d.creepers || []).map(Creeper.fromJSON);
+    w.arrows = (d.arrows || []).map(Arrow.fromJSON);
+    w.chests = {};
+    for (const cd of (d.chests || [])) {
+      const c = Chest.fromJSON(cd);
+      w.chests[c.x + ',' + c.y] = c;
+    }
+    w.hp = d.hp || 20; w.maxHp = 20;
+    w.timeOfDay = d.time || 0.25;
+    w.cameraX = 0; w.cameraY = 0;
+    w.tick = 0; w.hurtFlash = 0; w.invuln = 0; w.hitAnim = 0;
+    w.playerDir = 1;
+    w.explosions = [];
+    return w;
+  }
+}
+
+// ============ СОХРАНЕНИЕ ============
+const SAVE_KEY = 'minecraft_worlds_v1';
+function loadWorlds() {
+  try {
+    const raw = localStorage.getItem(SAVE_KEY);
+    if (!raw) return [];
+    return JSON.parse(raw).map(World.fromJSON);
+  } catch (e) { return []; }
+}
+function saveWorlds(worlds) {
+  try {
+    localStorage.setItem(SAVE_KEY, JSON.stringify(worlds.map(w => w.toJSON())));
+  } catch (e) {}
+}
+
+// ============ ОТРИСОВКА БЛОКОВ ============
+function drawBlock(x, y, size, id, darkness = 0) {
+  if (!id || id === 'air') return;
+  const info = BLOCKS[id];
+  if (!info) return;
+  const s = size;
+
+  if (id === 'glass') {
+    ctx.fillStyle = 'rgba(200,230,240,0.4)';
+    ctx.fillRect(x, y, s, s);
+    ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 3;
+    ctx.strokeRect(x+1.5, y+1.5, s-3, s-3);
+    ctx.beginPath();
+    ctx.moveTo(x+4, y+4); ctx.lineTo(x+s*0.5, y+s*0.5);
+    ctx.lineTo(x+s-6, y+6); ctx.stroke();
+    ctx.strokeStyle = '#000'; ctx.lineWidth = 2;
+    ctx.strokeRect(x+1, y+1, s-2, s-2);
+    return;
+  }
+  if (id === 'water') {
+    ctx.fillStyle = 'rgba(60,120,220,0.8)';
+    ctx.fillRect(x, y, s, s);
+    ctx.strokeStyle = '#64a0f0';
+    for (let i = 0; i < 3; i++) {
+      ctx.beginPath();
+      ctx.moveTo(x+2, y + s*0.3 + i*s*0.2);
+      ctx.lineTo(x+s-2, y + s*0.3 + i*s*0.2);
+      ctx.stroke();
+    }
+    if (darkness > 0) {
+      ctx.fillStyle = `rgba(0,0,30,${darkness/255})`;
+      ctx.fillRect(x, y, s, s);
+    }
+    return;
+  }
+
+  // базовая заливка
+  if (id === 'grass') {
+    ctx.fillStyle = info.dirt; ctx.fillRect(x, y, s, s);
+    ctx.fillStyle = info.color; ctx.fillRect(x, y, s, s*0.35);
+    ctx.fillStyle = '#468228';
+    ctx.fillRect(x+s*0.15, y+s*0.05, s*0.08, s*0.12);
+    ctx.fillRect(x+s*0.5, y+s*0.05, s*0.08, s*0.12);
+    ctx.fillRect(x+s*0.8, y+s*0.05, s*0.08, s*0.12);
+  } else if (id === 'lava') {
+    ctx.fillStyle = info.color; ctx.fillRect(x, y, s, s);
+    for (let i = 0; i < 4; i++) {
+      ctx.fillStyle = '#ffc83c';
+      ctx.fillRect(x + 4 + Math.random()*(s-12), y + 4 + Math.random()*(s-12), 6, 5);
+    }
+  } else {
+    ctx.fillStyle = info.color; ctx.fillRect(x, y, s, s);
+  }
+
+  // специальные узоры
+  if (id === 'stone') {
+    ctx.fillStyle = info.spot;
+    ctx.fillRect(x+s*0.1, y+s*0.15, s*0.2, s*0.2);
+    ctx.fillRect(x+s*0.5, y+s*0.4, s*0.25, s*0.2);
+    ctx.fillRect(x+s*0.2, y+s*0.65, s*0.2, s*0.2);
+  } else if (id === 'cobble') {
+    ctx.fillStyle = info.spot;
+    for (const [dx,dy,w,h] of [[0.05,0.05,0.35,0.35],[0.55,0.1,0.4,0.3],[0.1,0.55,0.4,0.35],[0.55,0.6,0.35,0.3]]) {
+      ctx.fillRect(x+s*dx, y+s*dy, s*w, s*h);
+    }
+  } else if (id === 'planks') {
+    ctx.fillStyle = info.line;
+    ctx.fillRect(x, y+s*0.33, s, 3);
+    ctx.fillRect(x, y+s*0.66, s, 3);
+  } else if (id === 'log') {
+    ctx.fillStyle = info.stripe;
+    ctx.fillRect(x+s*0.3, y+s*0.15, s*0.1, s*0.15);
+    ctx.fillRect(x+s*0.6, y+s*0.4,  s*0.1, s*0.15);
+    ctx.fillRect(x+s*0.3, y+s*0.7,  s*0.1, s*0.15);
+  } else if (id === 'dirt') {
+    ctx.fillStyle = info.spot;
+    ctx.fillRect(x+s*0.15, y+s*0.2, s*0.15, s*0.15);
+    ctx.fillRect(x+s*0.55, y+s*0.5, s*0.2, s*0.15);
+  } else if (id === 'sand') {
+    ctx.fillStyle = info.spot;
+    ctx.fillRect(x+s*0.2, y+s*0.2, s*0.1, s*0.1);
+    ctx.fillRect(x+s*0.6, y+s*0.55, s*0.1, s*0.1);
+  } else if (id === 'craft') {
+    ctx.fillStyle = info.line;
+    ctx.fillRect(x, y+s*0.5, s, 3);
+    ctx.fillRect(x+s*0.5, y, 3, s);
+    ctx.strokeStyle = '#dcdcdc'; ctx.lineWidth = 2;
+    ctx.strokeRect(x+s*0.1, y+s*0.1, s*0.3, s*0.3);
+    ctx.strokeRect(x+s*0.6, y+s*0.6, s*0.3, s*0.3);
+  } else if (id === 'chest') {
+    ctx.fillStyle = '#aa6e32'; ctx.fillRect(x+2, y+2, s-4, s*0.4);
+    ctx.strokeStyle = info.line; ctx.lineWidth = 2;
+    ctx.strokeRect(x+2, y+2, s-4, s*0.4);
+    ctx.fillStyle = '#965f28'; ctx.fillRect(x+2, y+s*0.42, s-4, s*0.55);
+    ctx.strokeRect(x+2, y+s*0.42, s-4, s*0.55);
+    ctx.fillStyle = '#dcc850';
+    ctx.fillRect(x+s*0.4, y+s*0.4, s*0.2, s*0.2);
+    ctx.strokeStyle = '#64481c';
+    ctx.strokeRect(x+s*0.4, y+s*0.4, s*0.2, s*0.2);
+  } else if (id === 'bricks') {
+    ctx.fillStyle = info.line;
+    ctx.fillRect(x, y+s*0.33, s, 2);
+    ctx.fillRect(x, y+s*0.66, s, 2);
+    ctx.fillRect(x+s*0.5, y, 2, s*0.33);
+    ctx.fillRect(x+s*0.25, y+s*0.33, 2, s*0.33);
+    ctx.fillRect(x+s*0.75, y+s*0.33, 2, s*0.33);
+    ctx.fillRect(x+s*0.5, y+s*0.66, 2, s*0.34);
+  } else if (id.endsWith('_ore')) {
+    ctx.fillStyle = info.spot;
+    ctx.fillRect(x+s*0.12, y+s*0.15, s*0.22, s*0.22);
+    ctx.fillRect(x+s*0.55, y+s*0.35, s*0.25, s*0.25);
+    ctx.fillRect(x+s*0.25, y+s*0.62, s*0.2, s*0.2);
+    if (id === 'diamond_ore') {
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(x+s*0.16, y+s*0.18, 4, 4);
+    }
+  } else if (id === 'leaves') {
+    ctx.fillStyle = '#286423'; ctx.fillRect(x, y, s, s);
+    ctx.fillStyle = '#509b3c';
+    for (const [dx,dy] of [[0.1,0.15],[0.4,0.1],[0.7,0.2],[0.2,0.5],[0.55,0.5],[0.8,0.55],[0.15,0.8],[0.45,0.75],[0.75,0.8]]) {
+      ctx.fillRect(x+s*dx, y+s*dy, s*0.15, s*0.15);
+    }
+  } else if (id === 'snow') {
+    ctx.fillStyle = info.spot;
+    ctx.fillRect(x+s*0.2, y+s*0.25, s*0.15, s*0.1);
+    ctx.fillRect(x+s*0.6, y+s*0.5, s*0.15, s*0.1);
+  } else if (id === 'ice') {
+    ctx.strokeStyle = info.line; ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(x+s*0.15, y+s*0.15); ctx.lineTo(x+s*0.45, y+s*0.5); ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(x+s*0.55, y+s*0.4); ctx.lineTo(x+s*0.85, y+s*0.75); ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(x+s*0.3, y+s*0.7); ctx.lineTo(x+s*0.6, y+s*0.9); ctx.stroke();
+  } else if (id === 'obsidian') {
+    ctx.fillStyle = info.spot;
+    ctx.fillRect(x+s*0.15, y+s*0.2, s*0.2, s*0.15);
+    ctx.fillRect(x+s*0.6, y+s*0.45, s*0.2, s*0.2);
+    ctx.fillStyle = '#7850c8';
+    ctx.fillRect(x+s*0.5, y+s*0.15, 3, 3);
+    ctx.fillRect(x+s*0.2, y+s*0.55, 3, 3);
+  } else if (id === 'bed') {
+    ctx.fillStyle = '#f0f0f0'; ctx.fillRect(x+2, y+2, s-4, s*0.35);
+    ctx.strokeStyle = '#000'; ctx.lineWidth = 2; ctx.strokeRect(x+2, y+2, s-4, s*0.35);
+    ctx.fillStyle = '#c83232'; ctx.fillRect(x+2, y+s*0.37, s-4, s*0.6);
+    ctx.strokeRect(x+2, y+s*0.37, s-4, s*0.6);
+  }
+
+  // обводка
+  ctx.strokeStyle = '#000'; ctx.lineWidth = 2;
+  ctx.strokeRect(x+1, y+1, s-2, s-2);
+
+  if (darkness > 0) {
+    ctx.fillStyle = `rgba(0,0,30,${darkness/255})`;
+    ctx.fillRect(x, y, s, s);
+  }
+}
+
+// ============ ОТРИСОВКА ПРЕДМЕТОВ ============
+function drawTool(x, y, size, id) {
+  const cx = x + size/2, cy = y + size/2;
+  ctx.save();
+  if (id === 'diamond_pickaxe') {
+    ctx.strokeStyle = '#966e46'; ctx.lineWidth = 6;
+    ctx.beginPath(); ctx.moveTo(cx-10, cy+12); ctx.lineTo(cx+8, cy-8); ctx.stroke();
+    ctx.strokeStyle = '#5adce6';
+    ctx.beginPath(); ctx.moveTo(cx-12, cy-10); ctx.lineTo(cx+12, cy-10); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(cx-12, cy-10); ctx.lineTo(cx-12, cy-4); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(cx+12, cy-10); ctx.lineTo(cx+12, cy-4); ctx.stroke();
+  } else if (id === 'iron_shovel') {
+    ctx.strokeStyle = '#c8c8d2'; ctx.lineWidth = 6;
+    ctx.beginPath(); ctx.moveTo(cx-10, cy+12); ctx.lineTo(cx+4, cy-4); ctx.stroke();
+    ctx.fillStyle = '#c8c8d2'; ctx.fillRect(cx-2, cy-14, 14, 14);
+    ctx.strokeStyle = '#966e46'; ctx.lineWidth = 5;
+    ctx.beginPath(); ctx.moveTo(cx-10, cy+12); ctx.lineTo(cx-2, cy+4); ctx.stroke();
+  } else if (id === 'diamond_sword' || id === 'wood_sword') {
+    const col = id === 'diamond_sword' ? '#5adce6' : '#966e46';
+    ctx.strokeStyle = '#966e46'; ctx.lineWidth = 6;
+    ctx.beginPath(); ctx.moveTo(cx-12, cy+14); ctx.lineTo(cx+2, cy); ctx.stroke();
+    ctx.strokeStyle = col; ctx.lineWidth = 8;
+    ctx.beginPath(); ctx.moveTo(cx-2, cy+2); ctx.lineTo(cx+14, cy-14); ctx.stroke();
+    ctx.lineWidth = 5;
+    ctx.beginPath(); ctx.moveTo(cx+2, cy-14); ctx.lineTo(cx+14, cy-2); ctx.stroke();
+  } else if (id === 'diamond_axe') {
+    ctx.strokeStyle = '#966e46'; ctx.lineWidth = 6;
+    ctx.beginPath(); ctx.moveTo(cx-12, cy+14); ctx.lineTo(cx+6, cy-4); ctx.stroke();
+    ctx.fillStyle = '#5adce6';
+    ctx.beginPath();
+    ctx.moveTo(cx+2, cy-14); ctx.lineTo(cx+14, cy-14);
+    ctx.lineTo(cx+14, cy-2); ctx.lineTo(cx+2, cy-6);
+    ctx.closePath(); ctx.fill();
+  } else if (id === 'stick') {
+    ctx.strokeStyle = '#82552d'; ctx.lineWidth = 7;
+    ctx.beginPath(); ctx.moveTo(cx-10, cy+12); ctx.lineTo(cx+10, cy-12); ctx.stroke();
+  } else if (id === 'bow') {
+    ctx.strokeStyle = '#966e46'; ctx.lineWidth = 4;
+    ctx.beginPath(); ctx.arc(cx, cy, 14, -1.5, 1.5); ctx.stroke();
+    ctx.strokeStyle = '#dcdcdc'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(cx+9, cy-12); ctx.lineTo(cx+9, cy+12); ctx.stroke();
+  } else if (id === 'arrow') {
+    ctx.strokeStyle = '#82552d'; ctx.lineWidth = 4;
+    ctx.beginPath(); ctx.moveTo(cx-10, cy+10); ctx.lineTo(cx+8, cy-8); ctx.stroke();
+    ctx.fillStyle = '#c8c8c8';
+    ctx.beginPath(); ctx.moveTo(cx+8, cy-8); ctx.lineTo(cx+14, cy-14); ctx.lineTo(cx+8, cy-2); ctx.fill();
+  } else if (id === 'gunpowder') {
+    ctx.fillStyle = '#5a5a5a';
+    for (const [dx,dy] of [[-6,-6],[2,-4],[-2,4],[6,6]]) {
+      ctx.beginPath(); ctx.arc(cx+dx, cy+dy, 4, 0, Math.PI*2); ctx.fill();
+    }
+  }
+  ctx.restore();
+}
+
+function drawItem(x, y, size, id) {
+  if (!id) return;
+  if (BLOCKS[id]) drawBlock(x, y, size, id);
+  else drawTool(x, y, size, id);
+}
+
+// ============ ОТРИСОВКА МОБОВ ============
+function drawSheep(sx, sy, s, sheep) {
+  const body = { x: sx+4, y: sy+8, w: s-8, h: s-16 };
+  ctx.fillStyle = sheep.hurt > 0 ? '#ff7878' : '#f0f0f0';
+  ctx.fillRect(body.x, body.y, body.w, body.h);
+  ctx.strokeStyle = '#000'; ctx.lineWidth = 2;
+  ctx.strokeRect(body.x, body.y, body.w, body.h);
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(sx+6, sy+10, 5, 5);
+  ctx.fillRect(sx+14, sy+10, 5, 5);
+  ctx.fillRect(sx+22, sy+10, 5, 5);
+  const hx = sx + (sheep.dir < 0 ? 2 : s - 14);
+  ctx.fillStyle = '#e6e1d7'; ctx.fillRect(hx, sy+12, 14, 16);
+  ctx.strokeRect(hx, sy+12, 14, 16);
+  ctx.fillStyle = '#000';
+  const ex = hx + (sheep.dir > 0 ? 3 : 8);
+  ctx.fillRect(ex, sy+16, 3, 3);
+  ctx.fillRect(ex, sy+21, 3, 3);
+  ctx.fillStyle = '#3c3c3c';
+  ctx.fillRect(sx+8, sy+s-6, 5, 6);
+  ctx.fillRect(sx+s-14, sy+s-6, 5, 6);
+  drawHpBar(sx, sy, sheep.hp, 8);
+}
+
+function drawZombie(sx, sy, s, z) {
+  const body = z.hurt > 0 ? '#ff7878' : '#3c823c';
+  ctx.fillStyle = '#285a8c'; ctx.fillRect(sx+8, sy+16, s-16, s-20);
+  ctx.fillStyle = body; ctx.fillRect(sx+6, sy+6, s-12, s-16);
+  ctx.strokeStyle = '#000'; ctx.lineWidth = 2;
+  ctx.strokeRect(sx+6, sy+6, s-12, s-16);
+  ctx.fillStyle = '#469632'; ctx.fillRect(sx+8, sy+2, s-16, 14);
+  ctx.strokeRect(sx+8, sy+2, s-16, 14);
+  ctx.fillStyle = '#000';
+  ctx.fillRect(sx+12, sy+6, 4, 4);
+  ctx.fillRect(sx+s-16, sy+6, 4, 4);
+  ctx.fillStyle = body;
+  ctx.fillRect(sx-2, sy+10, 6, 14);
+  ctx.fillRect(sx+s-4, sy+10, 6, 14);
+  if (z.burn > 0) {
+    for (let i = 0; i < 3; i++) {
+      ctx.fillStyle = `rgb(255,${120+Math.random()*100|0},30)`;
+      ctx.fillRect(sx+Math.random()*(s-4), sy+Math.random()*(s-8), 4, 6);
+    }
+  }
+  drawHpBar(sx, sy, z.hp, 20);
+}
+
+function drawSkeleton(sx, sy, s, sk) {
+  const body = sk.hurt > 0 ? '#ff7878' : '#e6e6e6';
+  ctx.fillStyle = '#c8c8c8';
+  ctx.fillRect(sx+10, sy+s-14, 4, 12);
+  ctx.fillRect(sx+s-14, sy+s-14, 4, 12);
+  ctx.fillStyle = body;
+  ctx.fillRect(sx+10, sy+14, s-20, s-24);
+  ctx.strokeStyle = '#000'; ctx.lineWidth = 2;
+  ctx.strokeRect(sx+10, sy+14, s-20, s-24);
+  ctx.strokeStyle = '#969696'; ctx.lineWidth = 1;
+  for (let i = 0; i < 3; i++) {
+    ctx.beginPath();
+    ctx.moveTo(sx+11, sy+18+i*5); ctx.lineTo(sx+s-11, sy+18+i*5); ctx.stroke();
+  }
+  ctx.fillStyle = body; ctx.fillRect(sx+8, sy+2, s-16, 14);
+  ctx.strokeStyle = '#000'; ctx.lineWidth = 2;
+  ctx.strokeRect(sx+8, sy+2, s-16, 14);
+  ctx.fillStyle = '#000';
+  ctx.fillRect(sx+12, sy+6, 4, 4);
+  ctx.fillRect(sx+s-16, sy+6, 4, 4);
+  ctx.strokeStyle = '#966e46'; ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.arc(sx+s-2, sy+17, 8, -1.5, 1.5); ctx.stroke();
+  drawHpBar(sx, sy, sk.hp, 16);
+}
+
+function drawCreeper(sx, sy, s, cr) {
+  let color = cr.hurt > 0 ? '#ff7878' : '#3cb43c';
+  if (cr.fuse >= 0 && Math.floor(cr.fuse / 4) % 2 === 0) color = '#dcdcdc';
+  ctx.fillStyle = color; ctx.fillRect(sx+6, sy+8, s-12, s-12);
+  ctx.strokeStyle = '#000'; ctx.lineWidth = 2;
+  ctx.strokeRect(sx+6, sy+8, s-12, s-12);
+  ctx.fillStyle = '#1e5a1e';
+  ctx.fillRect(sx+10, sy+12, 6, 6);
+  ctx.fillRect(sx+s-16, sy+16, 6, 6);
+  ctx.fillRect(sx+12, sy+s-14, 5, 5);
+  ctx.fillStyle = '#000';
+  ctx.fillRect(sx+12, sy+12, 6, 6);
+  ctx.fillRect(sx+s-18, sy+12, 6, 6);
+  ctx.fillRect(sx+16, sy+20, 8, 6);
+  ctx.fillStyle = color;
+  ctx.fillRect(sx+8, sy+s-6, 8, 6);
+  ctx.fillRect(sx+s-16, sy+s-6, 8, 6);
+  drawHpBar(sx, sy, cr.hp, 20);
+}
+
+function drawArrow(a, camX, camY) {
+  const ax = a.fx * TILE + TILE/2 + camX;
+  const ay = a.fy * TILE + TILE/2 + camY;
+  const len = Math.hypot(a.vx, a.vy);
+  if (len > 0) {
+    const vx = a.vx/len, vy = a.vy/len;
+    ctx.strokeStyle = a.hostile ? '#5a3c1e' : '#966e46';
+    ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(ax+vx*12, ay+vy*12); ctx.stroke();
+    ctx.fillStyle = '#c8c8c8';
+    ctx.beginPath(); ctx.arc(ax+vx*12, ay+vy*12, 3, 0, Math.PI*2); ctx.fill();
+  }
+}
+
+function drawHpBar(sx, sy, hp, maxHp) {
+  if (hp >= maxHp) return;
+  const w = 40, h = 5;
+  const x = sx + (TILE - w)/2;
+  const y = sy - 10;
+  ctx.fillStyle = '#3c0000'; ctx.fillRect(x, y, w, h);
+  ctx.fillStyle = '#dc1e1e'; ctx.fillRect(x, y, w * hp / maxHp, h);
+  ctx.strokeStyle = '#000'; ctx.lineWidth = 1; ctx.strokeRect(x+0.5, y+0.5, w-1, h-1);
+}
+
+function drawHeart(x, y, color, half) {
+  ctx.fillStyle = color;
+  ctx.fillRect(x, y+2, 16, 12);
+  ctx.fillRect(x+2, y, 12, 2);
+  ctx.fillRect(x+4, y-2, 8, 2);
+  if (half) {
+    ctx.fillStyle = '#3c3c3c';
+    ctx.fillRect(x+8, y, 8, 16);
+  }
+  ctx.strokeStyle = '#000'; ctx.lineWidth = 2;
+  ctx.strokeRect(x+1, y+3, 14, 10);
+}
+
+// ============ UI ============
+function drawHotbar(inv) {
+  const show = 12, size = 50;
+  const totalW = show * (size + 4) + 4;
+  const sx = (SCREEN_W - totalW) / 2;
+  const y = SCREEN_H - size - 12;
+  for (let i = 0; i < show; i++) {
+    const x = sx + i * (size + 4);
+    ctx.fillStyle = '#3c3c3c'; ctx.fillRect(x, y, size, size);
+    ctx.strokeStyle = i === inv.selected ? '#fff' : '#1e1e1e';
+    ctx.lineWidth = 3;
+    ctx.strokeRect(x+1.5, y+1.5, size-3, size-3);
+    const slot = inv.slots[i];
+    if (slot) {
+      drawItem(x, y, size, slot.id);
+      if (slot.count > 1) {
+        ctx.fillStyle = '#fff';
+        ctx.font = 'bold 14px Arial';
+        ctx.textAlign = 'right';
+        ctx.textBaseline = 'bottom';
+        ctx.fillText(slot.count, x + size - 4, y + size - 2);
+      }
+    }
+  }
+}
+
+function drawHealth(hp) {
+  for (let i = 0; i < 10; i++) {
+    const x = 20 + i * 24;
+    const y = 20;
+    const h = hp - i * 2;
+    if (h >= 2) drawHeart(x, y, '#dc1e1e', false);
+    else if (h === 1) drawHeart(x, y, '#dc1e1e', true);
+    else drawHeart(x, y, '#3c3c3c', false);
+  }
+}
+
+function drawFullInventory(inv) {
+  ctx.fillStyle = 'rgba(0,0,0,0.7)';
+  ctx.fillRect(0, 0, SCREEN_W, SCREEN_H);
+  const cols = 5, rows = 4, size = 70, pad = 10;
+  const gw = cols*size + (cols+1)*pad;
+  const gh = rows*size + (rows+1)*pad;
+  const gx = (SCREEN_W - gw) / 2;
+  const gy = (SCREEN_H - gh) / 2;
+  ctx.fillStyle = '#8c643c'; ctx.fillRect(gx, gy, gw, gh);
+  ctx.strokeStyle = '#000'; ctx.lineWidth = 4; ctx.strokeRect(gx, gy, gw, gh);
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 20px Arial';
+  ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+  ctx.fillText('Инвентарь', gx, gy - 32);
+  for (let i = 0; i < INV_SLOTS; i++) {
+    const r = Math.floor(i / cols), c = i % cols;
+    const x = gx + pad + c * (size + pad);
+    const y = gy + pad + r * (size + pad);
+    ctx.fillStyle = '#464646'; ctx.fillRect(x, y, size, size);
+    ctx.strokeStyle = '#1e1e1e'; ctx.lineWidth = 3;
+    ctx.strokeRect(x+1.5, y+1.5, size-3, size-3);
+    const slot = inv.slots[i];
+    if (slot) {
+      drawItem(x, y, size, slot.id);
+      if (slot.count > 1) {
+        ctx.fillStyle = '#fff';
+        ctx.font = 'bold 18px Arial';
+        ctx.textAlign = 'right'; ctx.textBaseline = 'bottom';
+        ctx.fillText(slot.count, x + size - 4, y + size - 2);
+      }
+    }
+  }
+}
+
+// ============ СОСТОЯНИЕ ============
+let STATE = 'menu'; // 'menu', 'play', 'pause', 'craft', 'chest', 'death'
+let worlds = loadWorlds();
+let currentWorld = null;
+let message = '';
+let uiButtons = [];
+let chestOpen = null;
+
+// ============ ВВОД ============
+const keys = {};
+document.addEventListener('keydown', e => {
+  keys[e.key.toLowerCase()] = true;
+  onKeyDown(e);
+});
+document.addEventListener('keyup', e => {
+  keys[e.key.toLowerCase()] = false;
+});
+
+function onKeyDown(e) {
+  if (STATE === 'menu') {
+    if (e.key === 'Escape') { saveWorlds(worlds); window.close(); }
+    return;
+  }
+  if (STATE === 'play') {
+    if (e.key === 'Escape') { STATE = 'pause'; return; }
+    if (e.key === 'e' || e.key === 'E' || e.key === 'у' || e.key === 'У') {
+      currentWorld.inventory.open = !currentWorld.inventory.open; return;
+    }
+    if (e.key === 'c' || e.key === 'C' || e.key === 'с' || e.key === 'С') {
+      currentWorld.inventory.open = false;
+      STATE = 'craft'; message = ''; return;
+    }
+    if (e.key >= '1' && e.key <= '9') currentWorld.inventory.selected = parseInt(e.key) - 1;
+    if (e.key === '0') currentWorld.inventory.selected = 9;
+    if (e.key === '-' || e.key === '_') currentWorld.inventory.selected = 10;
+    if (e.key === '=' || e.key === '+') currentWorld.inventory.selected = 11;
+    if (e.key === ' ') {
+      e.preventDefault();
+      const slot = currentWorld.inventory.slots[currentWorld.inventory.selected];
+      if (slot && slot.id === 'bow' && currentWorld.inventory.count('arrow') > 0) {
+        currentWorld.inventory.removeOne('arrow');
+        const tx = currentWorld.playerX + currentWorld.playerDir * 10;
+        currentWorld.arrows.push(new Arrow(currentWorld.playerX, currentWorld.playerY, tx, currentWorld.playerY, false));
+      }
+    }
+    // движение
+    const w = currentWorld;
+    let moved = false, dx = 0, dy = 0;
+    if (e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'ф') { dx = -1; w.playerDir = -1; moved = true; }
+    if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'в') { dx = 1; w.playerDir = 1; moved = true; }
+    if (e.key === 'ArrowUp' || e.key === 'w' || e.key === 'ц') { dy = -1; moved = true; }
+    if (e.key === 'ArrowDown' || e.key === 's' || e.key === 'ы') { dy = 1; moved = true; }
+    if (moved) tryMove(w, dx, dy);
+  }
+  else if (STATE === 'pause') {
+    if (e.key === 'Escape') { STATE = 'play'; return; }
+  }
+  else if (STATE === 'craft' || STATE === 'chest') {
+    if (e.key === 'Escape') { STATE = 'play'; return; }
+  }
+}
+
+function tryMove(w, dx, dy) {
+  if (w.inventory.open) return;
+  const nx = w.playerX + dx, ny = w.playerY + dy;
+  if (nx < 0 || nx >= MAP_W || ny < 0 || ny >= MAP_H) return;
+  const cell = w.grid[ny][nx];
+  // автопрыжок
+  if (cell !== 'air' && BLOCKS[cell] && BLOCKS[cell].solid !== false) {
+    if (ny-1 >= 0 && w.grid[ny-1][nx] === 'air'
+        && w.playerY-1 >= 0 && w.grid[w.playerY-1][w.playerX] === 'air') {
+      w.playerX = nx; w.playerY = ny - 1;
+      return;
+    }
+    return;
+  }
+  w.playerX = nx; w.playerY = ny;
+}
+
+// мышь
+let mouseDown = false;
+canvas.addEventListener('mousedown', e => {
+  const mx = e.offsetX, my = e.offsetY;
+  if (STATE === 'menu') { menuClick(mx, my); return; }
+  if (STATE === 'pause') { pauseClick(mx, my); return; }
+  if (STATE === 'craft') { craftClick(mx, my); return; }
+  if (STATE === 'chest') { chestClick(mx, my); return; }
+  if (STATE === 'death') return;
+  if (STATE === 'play') playClick(mx, my, e.button);
+});
+canvas.addEventListener('contextmenu', e => e.preventDefault());
+
+canvas.addEventListener('mousemove', e => {
+  if (STATE === 'play' && currentWorld && currentWorld.joyActive) {
+    currentWorld.joyPos = { x: e.offsetX, y: e.offsetY };
+  }
+});
+canvas.addEventListener('mouseup', e => {
+  if (STATE === 'play' && currentWorld && currentWorld.joyActive) {
+    releaseJoystick();
+  }
+});
+
+// тач
+canvas.addEventListener('touchstart', e => {
+  e.preventDefault();
+  const t = e.touches[0];
+  const r = canvas.getBoundingClientRect();
+  const mx = t.clientX - r.left, my = t.clientY - r.top;
+  if (STATE === 'menu') { menuClick(mx, my); return; }
+  if (STATE === 'pause') { pauseClick(mx, my); return; }
+  if (STATE === 'craft') { craftClick(mx, my); return; }
+  if (STATE === 'chest') { chestClick(mx, my); return; }
+  if (STATE === 'play') {
+    // джойстик?
+    const joy = getJoystick();
+    if (Math.hypot(mx - joy.cx, my - joy.cy) <= joy.r) {
+      currentWorld.joyActive = true;
+      currentWorld.joyStart = { x: mx, y: my };
+      currentWorld.joyPos = { x: mx, y: my };
+      return;
+    }
+    if (handleMobileButton(mx, my)) return;
+    playClick(mx, my, 0);
+  }
+}, { passive: false });
+
+canvas.addEventListener('touchmove', e => {
+  e.preventDefault();
+  if (STATE === 'play' && currentWorld && currentWorld.joyActive) {
+    const t = e.touches[0];
+    const r = canvas.getBoundingClientRect();
+    currentWorld.joyPos = { x: t.clientX - r.left, y: t.clientY - r.top };
+  }
+}, { passive: false });
+
+canvas.addEventListener('touchend', e => {
+  e.preventDefault();
+  if (STATE === 'play' && currentWorld && currentWorld.joyActive) releaseJoystick();
+}, { passive: false });
+
+function releaseJoystick() {
+  const w = currentWorld;
+  const jx = w.joyStart.x, jy = w.joyStart.y;
+  const dx = w.joyPos.x - jx, dy = w.joyPos.y - jy;
+  if (Math.abs(dx) > 20 || Math.abs(dy) > 20) {
+    if (Math.abs(dx) > Math.abs(dy)) {
+      tryMove(w, dx > 0 ? 1 : -1, 0);
+    } else {
+      tryMove(w, 0, dy > 0 ? 1 : -1);
+    }
+  }
+  w.joyActive = false;
+}
+
+// ============ КЛИКИ ============
+function menuClick(mx, my) {
+  for (const b of uiButtons) {
+    if (mx >= b.x && mx <= b.x + b.w && my >= b.y && my <= b.y + b.h) {
+      b.onClick();
+      return;
+    }
+  }
+}
+
+function pauseClick(mx, my) {
+  for (const b of uiButtons) {
+    if (mx >= b.x && mx <= b.x + b.w && my >= b.y && my <= b.y + b.h) {
+      b.onClick();
+      return;
+    }
+  }
+}
+
+function craftClick(mx, my) {
+  for (const b of uiButtons) {
+    if (mx >= b.x && mx <= b.x + b.w && my >= b.y && my <= b.y + b.h) {
+      b.onClick();
+      return;
+    }
+  }
+}
+
+function chestClick(mx, my) {
+  for (const b of uiButtons) {
+    if (mx >= b.x && mx <= b.x + b.w && my >= b.y && my <= b.y + b.h) {
+      b.onClick();
+      return;
+    }
+  }
+}
+
+function playClick(mx, my, button) {
+  const w = currentWorld;
+  if (w.inventory.open) return;
+  const bx = Math.floor((mx - w.cameraX) / TILE);
+  const by = Math.floor((my - w.cameraY) / TILE);
+  if (bx < 0 || bx >= MAP_W || by < 0 || by >= MAP_H) return;
+
+  if (button === 2) {
+    // ПКМ — сломать
+    breakBlock(w, bx, by);
+  } else {
+    // ЛКМ — атака / поставить
+    // сундук?
+    const key = bx + ',' + by;
+    if (w.grid[by][bx] === 'chest' && w.chests[key]) {
+      chestOpen = w.chests[key];
+      STATE = 'chest';
+      return;
+    }
+    if (!tryAttackAt(w, bx, by)) {
+      placeBlockAt(w, bx, by);
+    }
+  }
+}
+
+function breakBlock(w, bx, by) {
+  const block = w.grid[by][bx];
+  if (block === 'air' || block === 'bedrock') return;
+  if (block === 'chest' && w.chests[bx + ',' + by]) {
+    const chest = w.chests[bx + ',' + by];
+    for (const cs of chest.slots) {
+      if (cs) w.inventory.add(cs.id, cs.count);
+    }
+    delete w.chests[bx + ',' + by];
+  }
+  if (w.inventory.add(block)) w.grid[by][bx] = 'air';
+}
+
+function placeBlockAt(w, bx, by) {
+  if (bx < 0 || bx >= MAP_W || by < 0 || by >= MAP_H) return;
+  if (w.grid[by][bx] !== 'air') return;
+  if (bx === w.playerX && by === w.playerY) return;
+  const slot = w.inventory.slots[w.inventory.selected];
+  if (!slot || !BLOCKS[slot.id] || slot.id === 'air') return;
+  if (slot.id === 'chest') w.chests[bx + ',' + by] = new Chest(bx, by);
+  w.grid[by][bx] = slot.id;
+  slot.count--;
+  if (slot.count <= 0) w.inventory.slots[w.inventory.selected] = null;
+}
+
+function tryAttackAt(w, bx, by) {
+  const slot = w.inventory.slots[w.inventory.selected];
+  const dmg = (slot && DAMAGE[slot.id]) || HAND_DAMAGE;
+  w.hitAnim = 10;
+  const hit = (arr, hpMax, drop) => {
+    for (let i = 0; i < arr.length; i++) {
+      if (arr[i].x === bx && arr[i].y === by) {
+        arr[i].hp -= dmg;
+        arr[i].hurt = 10;
+        if (arr[i].hp <= 0) {
+          arr.splice(i, 1);
+          if (drop) drop();
+        }
+        return true;
+      }
+    }
+    return false;
+  };
+  if (hit(w.zombies, 20, () => w.inventory.add('stick', 2))) return true;
+  if (hit(w.skeletons, 16, () => w.inventory.add('stick', 3))) return true;
+  if (hit(w.creepers, 20, () => w.inventory.add('gunpowder', 1))) return true;
+  if (hit(w.sheep, 8, null)) return true;
+  return false;
+}
+
+// мобильные кнопки
+function getMobileButtons() {
+  const size = Math.min(70, SCREEN_W * 0.12);
+  const pad = 12;
+  return {
+    jump:   { x: SCREEN_W - size - pad, y: SCREEN_H - size*3 - pad*3, w: size, h: size },
+    attack: { x: SCREEN_W - size*2 - pad*2, y: SCREEN_H - size - pad, w: size, h: size },
+    place:  { x: SCREEN_W - size - pad, y: SCREEN_H - size - pad, w: size, h: size },
+    inv:    { x: SCREEN_W - 130, y: 20, w: 110, h: 40 },
+    craft:  { x: SCREEN_W - 130, y: 70, w: 110, h: 40 },
+    pause:  { x: SCREEN_W - 130, y: 120, w: 110, h: 40 },
+  };
+}
+
+function getJoystick() {
+  const size = Math.min(70, SCREEN_W * 0.12) * 2;
+  return { cx: 30 + size/2, cy: SCREEN_H - size/2 - 30, r: size/2 };
+}
+
+function handleMobileButton(mx, my) {
+  const btns = getMobileButtons();
+  const w = currentWorld;
+  const inside = b => mx >= b.x && mx <= b.x + b.w && my >= b.y && my <= b.y + b.h;
+  if (inside(btns.attack)) {
+    const tx = w.playerX + w.playerDir, ty = w.playerY;
+    if (!tryAttackAt(w, tx, ty)) w.hitAnim = 10;
+    return true;
+  }
+  if (inside(btns.place)) {
+    placeBlockAt(w, w.playerX + w.playerDir, w.playerY);
+    return true;
+  }
+  if (inside(btns.jump)) {
+    if (w.playerY-1 >= 0 && w.grid[w.playerY-1][w.playerX] === 'air') w.playerY--;
+    return true;
+  }
+  if (inside(btns.inv)) { w.inventory.open = !w.inventory.open; return true; }
+  if (inside(btns.craft)) { w.inventory.open = false; STATE = 'craft'; message = ''; return true; }
+  if (inside(btns.pause)) { STATE = 'pause'; return true; }
+  return false;
+}
+
+// ============ ЛОГИКА ИГРЫ ============
+function updateGame() {
+  const w = currentWorld;
+  w.tick++;
+  if (w.invuln > 0) w.invuln--;
+  if (w.hurtFlash > 0) w.hurtFlash--;
+  if (w.hitAnim > 0) w.hitAnim--;
+
+  w.timeOfDay = (w.timeOfDay + 1 / DAY_LENGTH) % 1;
+  const isDay = w.isDay();
+
+  if (!isDay && w.tick % 60 === 0) w.spawnNightMobs();
+
+  if (w.tick % 2 === 0) {
+    for (const s of w.sheep) s.update(w, w.playerX, w.playerY);
+    for (let i = w.zombies.length - 1; i >= 0; i--) {
+      const z = w.zombies[i];
+      z.update(w, w.playerX, w.playerY, isDay);
+      if (z.hp <= 0) { w.zombies.splice(i, 1); w.inventory.add('stick', 2); continue; }
+      if (Math.abs(z.x - w.playerX) <= 1 && Math.abs(z.y - w.playerY) <= 1) {
+        if (z.cd === 0 && w.invuln === 0) {
+          w.hp -= ZOMBIE_DAMAGE; w.hurtFlash = 15; w.invuln = 30; z.cd = 60;
+          if (w.hp <= 0) { w.hp = 0; STATE = 'death'; return; }
+        }
+      }
+    }
+    for (const sk of w.skeletons) sk.update(w, w.playerX, w.playerY, w.arrows);
+    for (let i = w.creepers.length - 1; i >= 0; i--) {
+      const cr = w.creepers[i];
+      cr.update(w, w.playerX, w.playerY);
+      if (cr.hp <= 0) { w.creepers.splice(i, 1); continue; }
+      if (cr.exploded) {
+        w.explosions.push([cr.x, cr.y, 20]);
+        for (let ex = -3; ex <= 3; ex++) for (let ey = -3; ey <= 3; ey++) {
+          if (Math.abs(ex) + Math.abs(ey) > 3) continue;
+          const bx = cr.x + ex, by = cr.y + ey;
+          if (bx >= 0 && bx < MAP_W && by >= 0 && by < MAP_H) {
+            if (w.grid[by][bx] !== 'air' && w.grid[by][bx] !== 'bedrock') {
+              if (w.grid[by][bx] === 'chest') delete w.chests[bx + ',' + by];
+              w.grid[by][bx] = 'air';
+            }
+          }
+        }
+        const d = Math.abs(cr.x - w.playerX) + Math.abs(cr.y - w.playerY);
+        if (d <= 3) {
+          const dmg = d <= 1 ? CREEPER_DAMAGE : (d === 2 ? CREEPER_DAMAGE/2 : 4);
+          w.hp -= dmg; w.hurtFlash = 20; w.invuln = 40;
+          if (w.hp <= 0) { w.hp = 0; STATE = 'death'; return; }
+        }
+        w.creepers.splice(i, 1);
+        continue;
+      }
+    }
+    for (let i = w.arrows.length - 1; i >= 0; i--) {
+      const a = w.arrows[i];
+      a.update();
+      const ax = a.fx * TILE + TILE/2;
+      const ay = a.fy * TILE + TILE/2;
+      const px = w.playerX * TILE + TILE/2;
+      const py = w.playerY * TILE + TILE/2;
+      if (a.hostile && Math.hypot(ax-px, ay-py) < TILE/2) {
+        if (w.invuln === 0) {
+          w.hp -= ARROW_DAMAGE; w.hurtFlash = 12; w.invuln = 20;
+          if (w.hp <= 0) { w.hp = 0; STATE = 'death'; return; }
+        }
+        w.arrows.splice(i, 1); continue;
+      }
+      if (!a.hostile) {
+        let hit = false;
+        for (const [arr, drop] of [[w.zombies, () => w.inventory.add('stick',2)],
+                                    [w.skeletons, () => w.inventory.add('stick',3)],
+                                    [w.creepers, () => w.inventory.add('gunpowder',1)]]) {
+          for (let j = 0; j < arr.length; j++) {
+            const m = arr[j];
+            if (Math.abs(m.x - a.fx) < 0.6 && Math.abs(m.y - a.fy) < 0.6) {
+              m.hp -= 4; m.hurt = 10;
+              if (m.hp <= 0) { arr.splice(j, 1); drop(); }
+              hit = true; break;
+            }
+          }
+          if (hit) break;
+        }
+        if (hit) { w.arrows.splice(i, 1); continue; }
+      }
+      const bx = Math.floor(a.fx), by = Math.floor(a.fy);
+      if (bx >= 0 && bx < MAP_W && by >= 0 && by < MAP_H) {
+        if (w.grid[by][bx] !== 'air' && !(bx === w.playerX && by === w.playerY)) {
+          w.arrows.splice(i, 1); continue;
+        }
+      }
+      if (a.life <= 0) w.arrows.splice(i, 1);
+    }
+  }
+
+  // взрывы
+  for (let i = w.explosions.length - 1; i >= 0; i--) {
+    w.explosions[i][2]--;
+    if (w.explosions[i][2] <= 0) w.explosions.splice(i, 1);
+  }
+}
+
+// ============ ОТРИСОВКА ============
+function skyColor(t) {
+  if (t >= 0.3 && t <= 0.7) return '#87ceeb';
+  if (t >= 0.2 && t < 0.3) {
+    const k = (t - 0.2) / 0.1;
+    return `rgb(${30+105*k|0},${30+176*k|0},${80+155*k|0})`;
+  }
+  if (t > 0.7 && t <= 0.8) {
+    const k = (t - 0.7) / 0.1;
+    return `rgb(${135-80*k|0},${206-130*k|0},${235-130*k|0})`;
+  }
+  if (t > 0.8 && t <= 0.9) {
+    const k = (t - 0.8) / 0.1;
+    return `rgb(${55-30*k|0},${76-56*k|0},${105-85*k|0})`;
+  }
+  return '#19143c';
+}
+
+function drawGame() {
+  const w = currentWorld;
+  const isDay = w.isDay();
+  const darkness = w.darkness();
+  const dk = Math.floor(darkness * 160);
+
+  // камера
+  w.cameraX = Math.floor(SCREEN_W / 2 - w.playerX * TILE - TILE / 2);
+  w.cameraY = Math.floor(SCREEN_H / 2 - w.playerY * TILE - TILE / 2);
+
+  ctx.fillStyle = skyColor(w.timeOfDay);
+  ctx.fillRect(0, 0, SCREEN_W, SCREEN_H);
+
+  if (!isDay && darkness > 0.5) {
+    for (let i = 0; i < 40; i++) {
+      const sx = (i * 137) % SCREEN_W;
+      const sy = (i * 79) % (SCREEN_H / 2);
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(sx, sy, 2, 2);
+    }
+  }
+
+  // солнце / луна
+  const sunX = Math.floor(SCREEN_W * w.timeOfDay);
+  const sunY = 60;
+  if (isDay) {
+    ctx.fillStyle = '#fff066';
+    ctx.beginPath(); ctx.arc(sunX, sunY, 30, 0, Math.PI*2); ctx.fill();
+  } else {
+    ctx.fillStyle = '#dcdcf0';
+    ctx.beginPath(); ctx.arc(sunX, sunY, 25, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = skyColor(w.timeOfDay);
+    ctx.beginPath(); ctx.arc(sunX+8, sunY-4, 22, 0, Math.PI*2); ctx.fill();
+  }
+
+  // блоки
+  const startX = Math.max(0, Math.floor(-w.cameraX / TILE) - 1);
+  const endX = Math.min(MAP_W, startX + Math.ceil(SCREEN_W / TILE) + 3);
+  const startY = Math.max(0, Math.floor(-w.cameraY / TILE) - 1);
+  const endY = Math.min(MAP_H, startY + Math.ceil(SCREEN_H / TILE) + 3);
+
+  for (let by = startY; by < endY; by++) {
+    for (let bx = startX; bx < endX; bx++) {
+      const b = w.grid[by][bx];
+      if (b !== 'air') {
+        drawBlock(w.cameraX + bx*TILE, w.cameraY + by*TILE, TILE, b, dk);
+      }
+    }
+  }
+
+  // мобы
+  for (const s of w.sheep) drawSheep(w.cameraX + s.x*TILE, w.cameraY + s.y*TILE, TILE, s);
+  for (const z of w.zombies) drawZombie(w.cameraX + z.x*TILE, w.cameraY + z.y*TILE, TILE, z);
+  for (const sk of w.skeletons) drawSkeleton(w.cameraX + sk.x*TILE, w.cameraY + sk.y*TILE, TILE, sk);
+  for (const cr of w.creepers) drawCreeper(w.cameraX + cr.x*TILE, w.cameraY + cr.y*TILE, TILE, cr);
+  for (const a of w.arrows) drawArrow(a, w.cameraX, w.cameraY);
+
+  // взрывы
+  for (const exp of w.explosions) {
+    const [ex, ey, t] = exp;
+    const radius = (20 - t) * 4;
+    const alpha = t / 20;
+    const cx = w.cameraX + ex*TILE + TILE/2;
+    const cy = w.cameraY + ey*TILE + TILE/2;
+    ctx.fillStyle = `rgba(255,150,30,${alpha})`;
+    ctx.beginPath(); ctx.arc(cx, cy, radius, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = `rgba(255,240,100,${alpha})`;
+    ctx.beginPath(); ctx.arc(cx, cy, radius/2, 0, Math.PI*2); ctx.fill();
+  }
+
+  // игрок
+  const px = w.cameraX + w.playerX * TILE;
+  const py = w.cameraY + w.playerY * TILE;
+  const pc = w.hurtFlash === 0 ? '#3c3cdc' : '#ff6464';
+  ctx.fillStyle = '#28288c'; ctx.fillRect(px+8, py+4, TILE-16, TILE-8);
+  ctx.fillStyle = pc; ctx.fillRect(px+8, py+4, TILE-16, TILE-8);
+  ctx.strokeStyle = pc; ctx.lineWidth = 3;
+  ctx.strokeRect(px+9.5, py+5.5, TILE-19, TILE-11);
+  ctx.fillStyle = '#e6c8a0'; ctx.fillRect(px+12, py-8, TILE-24, 16);
+  ctx.strokeStyle = '#000'; ctx.lineWidth = 2;
+  ctx.strokeRect(px+12, py-8, TILE-24, 16);
+  const eyeX = px + 12 + (w.playerDir > 0 ? 3 : 6);
+  ctx.fillStyle = '#000';
+  ctx.fillRect(eyeX, py-4, 3, 3);
+  ctx.fillRect(eyeX+6, py-4, 3, 3);
+
+  // оружие в руке
+  const slot = w.inventory.slots[w.inventory.selected];
+  if (slot && (TOOLS[slot.id])) {
+    const armOff = w.hitAnim > 0 ? -6 : 0;
+    const ax = px + (w.playerDir > 0 ? TILE-8 : -TILE+8);
+    const ay = py + 8 + armOff;
+    drawTool(ax, ay, TILE-14, slot.id);
+  }
+
+  // HUD
+  drawHotbar(w.inventory);
+  drawHealth(w.hp);
+
+  // время суток
+  ctx.fillStyle = 'rgba(30,30,30,0.7)';
+  ctx.fillRect(SCREEN_W - 130, SCREEN_H - 130, 110, 40);
+  ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
+  ctx.strokeRect(SCREEN_W - 130, SCREEN_H - 130, 110, 40);
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 14px Arial';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(isDay ? '☀ День' : '🌙 Ночь', SCREEN_W - 75, SCREEN_H - 110);
+
+  // счётчик мобов
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 14px Arial';
+  ctx.textAlign = 'right'; ctx.textBaseline = 'top';
+  ctx.fillText(`🐑${w.sheep.length} 🧟${w.zombies.length} 💀${w.skeletons.length} 💥${w.creepers.length}`,
+               SCREEN_W - 10, 20);
+
+  // мобильные кнопки
+  if (isMobile()) drawMobileControls();
+
+  if (w.inventory.open) drawFullInventory(w.inventory);
+}
+
+function isMobile() {
+  return 'ontouchstart' in window && window.innerWidth < 1200;
+}
+
+function drawMobileControls() {
+  const btns = getMobileButtons();
+  const joy = getJoystick();
+  ctx.fillStyle = 'rgba(60,60,60,0.5)';
+  ctx.beginPath(); ctx.arc(joy.cx, joy.cy, joy.r - 4, 0, Math.PI*2); ctx.fill();
+  ctx.strokeStyle = 'rgba(200,200,200,0.7)'; ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.arc(joy.cx, joy.cy, joy.r - 4, 0, Math.PI*2); ctx.stroke();
+
+  const w = currentWorld;
+  const kx = w.joyActive ? w.joyPos.x : joy.cx;
+  const ky = w.joyActive ? w.joyPos.y : joy.cy;
+  ctx.fillStyle = '#dcdcdc';
+  ctx.beginPath(); ctx.arc(kx, ky, 26, 0, Math.PI*2); ctx.fill();
+
+  const labels = { jump: '↑', attack: '⛏', place: '▢', inv: 'Инв', craft: 'Врст', pause: '❚❚' };
+  for (const key of ['jump', 'attack', 'place']) {
+    const b = btns[key];
+    ctx.fillStyle = 'rgba(80,60,40,0.8)';
+    roundRect(b.x, b.y, b.w, b.h, 10); ctx.fill();
+    ctx.strokeStyle = '#000'; ctx.lineWidth = 3;
+    roundRect(b.x, b.y, b.w, b.h, 10); ctx.stroke();
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 28px Arial';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(labels[key], b.x + b.w/2, b.y + b.h/2);
+  }
+  for (const key of ['inv', 'craft', 'pause']) {
+    const b = btns[key];
+    ctx.fillStyle = 'rgba(60,60,90,0.8)';
+    roundRect(b.x, b.y, b.w, b.h, 8); ctx.fill();
+    ctx.strokeStyle = '#000'; ctx.lineWidth = 2;
+    roundRect(b.x, b.y, b.w, b.h, 8); ctx.stroke();
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 14px Arial';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(labels[key], b.x + b.w/2, b.y + b.h/2);
+  }
+}
+
+function roundRect(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x+r, y);
+  ctx.arcTo(x+w, y, x+w, y+h, r);
+  ctx.arcTo(x+w, y+h, x, y+h, r);
+  ctx.arcTo(x, y+h, x, y, r);
+  ctx.arcTo(x, y, x+w, y, r);
+  ctx.closePath();
+}
+
+// ============ ЭКРАНЫ ============
+function drawMenu() {
+  drawDirtBg();
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 64px Arial';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.shadowColor = '#000'; ctx.shadowOffsetX = 4; ctx.shadowOffsetY = 4;
+  ctx.fillText('Майнкрафт', SCREEN_W/2, 100);
+  ctx.shadowColor = 'transparent';
+
+  uiButtons = [];
+
+  const btnNew = { x: SCREEN_W/2 - 150, y: 180, w: 300, h: 50 };
+  drawButton(btnNew, '+ Создать новый мир', '#328232');
+  uiButtons.push({ ...btnNew, onClick: () => {
+    if (worlds.length < MAX_WORLDS) {
+      worlds.push(new World(`Мир ${worlds.length+1}`));
+      saveWorlds(worlds);
+    }
+  }});
+
+  worlds.forEach((w, i) => {
+    const y = 260 + i * 70;
+    const b = { x: SCREEN_W/2 - 200, y, w: 400, h: 60 };
+    drawButton(b, `Мир ${i+1}: ${w.name}`, '#503c28');
+    uiButtons.push({ ...b, onClick: () => {
+      currentWorld = w;
+      STATE = 'play';
+    }});
+  });
+
+  ctx.fillStyle = '#fff';
+  ctx.font = '16px Arial';
+  ctx.textAlign = 'left'; ctx.textBaseline = 'bottom';
+  ctx.fillText(`Миров: ${worlds.length}/${MAX_WORLDS}`, 10, SCREEN_H - 20);
+}
+
+function drawDirtBg() {
+  for (let y = 0; y < SCREEN_H; y += 40) {
+    for (let x = 0; x < SCREEN_W; x += 40) {
+      ctx.fillStyle = '#6e4b28'; ctx.fillRect(x, y, 40, 40);
+      ctx.fillStyle = '#55371e';
+      ctx.fillRect(x+8, y+10, 10, 8);
+      ctx.fillRect(x+22, y+24, 12, 8);
+      ctx.fillStyle = '#8c643c';
+      ctx.fillRect(x+18, y+6, 6, 6);
+      ctx.strokeStyle = '#000'; ctx.lineWidth = 1;
+      ctx.strokeRect(x+0.5, y+0.5, 39, 39);
+    }
+  }
+}
+
+function drawButton(b, text, color) {
+  ctx.fillStyle = color; ctx.fillRect(b.x, b.y, b.w, b.h);
+  ctx.strokeStyle = '#000'; ctx.lineWidth = 3;
+  ctx.strokeRect(b.x+1.5, b.y+1.5, b.w-3, b.h-3);
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 20px Arial';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(text, b.x + b.w/2, b.y + b.h/2);
+}
+
+function drawPause() {
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, SCREEN_W, SCREEN_H);
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 48px Arial';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(currentWorld.name, SCREEN_W/2, 100);
+
+  uiButtons = [];
+  const bSave = { x: SCREEN_W/2 - 150, y: 260, w: 300, h: 60 };
+  drawButton(bSave, 'Сохранить', '#3c3c3c');
+  uiButtons.push({ ...bSave, onClick: () => { saveWorlds(worlds); STATE = 'play'; }});
+
+  const bExit = { x: SCREEN_W/2 - 150, y: 350, w: 300, h: 60 };
+  drawButton(bExit, 'Выйти в меню', '#3c3c3c');
+  uiButtons.push({ ...bExit, onClick: () => {
+    saveWorlds(worlds); STATE = 'menu';
+  }});
+}
+
+function drawCraft() {
+  ctx.fillStyle = 'rgba(0,0,0,0.85)';
+  ctx.fillRect(0, 0, SCREEN_W, SCREEN_H);
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 40px Arial';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText('Верстак', SCREEN_W/2, 70);
+
+  uiButtons = [];
+  const w = currentWorld;
+  const startX = SCREEN_W/2 - 250;
+  const startY = 150;
+
+  RECIPES.forEach((rec, i) => {
+    const b = { x: startX, y: startY + i * 70, w: 500, h: 60 };
+    ctx.fillStyle = '#6e5032'; ctx.fillRect(b.x, b.y, b.w, b.h);
+    ctx.strokeStyle = '#000'; ctx.lineWidth = 3; ctx.strokeRect(b.x+1.5, b.y+1.5, b.w-3, b.h-3);
+
+    // ингредиенты
+    let ix = b.x + 10;
+    for (const k of Object.keys(rec.in)) {
+      drawItem(ix, b.y + 10, 40, k);
+      ix += 50;
+    }
+
+    // стрелка
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 24px Arial';
+    ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+    ctx.fillText('→', b.x + 200, b.y + 30);
+
+    // результат
+    const outK = Object.keys(rec.out)[0];
+    drawItem(b.x + 250, b.y + 10, 40, outK);
+
+    // подпись
+    ctx.fillStyle = '#dcdcdc';
+    ctx.font = '14px Arial';
+    const ingText = Object.entries(rec.in).map(([k, v]) =>
+      `${BLOCKS[k]?.name || TOOLS[k]?.name || k} x${v}`).join(' + ');
+    const outText = `${BLOCKS[outK]?.name || TOOLS[outK]?.name || outK} x${rec.out[outK]}`;
+    ctx.fillText(`${ingText} → ${outText}`, b.x + 310, b.y + 30);
+
+    uiButtons.push({ ...b, onClick: () => {
+      const need = rec.in;
+      const have = {};
+      for (const s of w.inventory.slots) if (s) have[s.id] = (have[s.id] || 0) + s.count;
+      if (Object.entries(need).every(([k, v]) => (have[k] || 0) >= v)) {
+        for (const [k, v] of Object.entries(need)) {
+          let left = v;
+          for (let j = 0; j < w.inventory.slots.length; j++) {
+            const s = w.inventory.slots[j];
+            if (s && s.id === k && left > 0) {
+              const take = Math.min(s.count, left);
+              s.count -= take; left -= take;
+              if (s.count <= 0) w.inventory.slots[j] = null;
+            }
+          }
+        }
+        for (const [k, v] of Object.entries(rec.out)) w.inventory.add(k, v);
+        message = 'Скрафчено!';
+      } else {
+        message = 'Не хватает ресурсов!';
+      }
+    }});
+  });
+
+  ctx.fillStyle = '#ffe678';
+  ctx.font = 'bold 18px Arial';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(message, SCREEN_W/2, SCREEN_H - 120);
+
+  const btnClose = { x: SCREEN_W/2 - 100, y: SCREEN_H - 80, w: 200, h: 40 };
+  drawButton(btnClose, 'Закрыть', '#82323c');
+  uiButtons.push({ ...btnClose, onClick: () => { STATE = 'play'; }});
+}
+
+function drawChest() {
+  const w = currentWorld;
+  const chest = chestOpen;
+  ctx.fillStyle = 'rgba(0,0,0,0.8)';
+  ctx.fillRect(0, 0, SCREEN_W, SCREEN_H);
+
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 24px Arial';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+
+  const cols = 9, size = 50, pad = 4;
+  const gw = cols * size + (cols+1) * pad;
+  const gh = 3 * size + 4 * pad;
+  const gx = (SCREEN_W - gw) / 2;
+  const gy = 80;
+
+  ctx.fillText('Сундук', SCREEN_W/2, gy - 32);
+  ctx.fillStyle = '#8c643c';
+  ctx.fillRect(gx - 4, gy - 4, gw + 8, gh + 8);
+  ctx.strokeStyle = '#000'; ctx.lineWidth = 3;
+  ctx.strokeRect(gx - 2.5, gy - 2.5, gw + 5, gh + 5);
+
+  uiButtons = [];
+
+  const chestRects = [];
+  for (let i = 0; i < 27; i++) {
+    const r = Math.floor(i / cols), c = i % cols;
+    const x = gx + pad + c * (size + pad);
+    const y = gy + pad + r * (size + pad);
+    ctx.fillStyle = '#464646'; ctx.fillRect(x, y, size, size);
+    ctx.strokeStyle = '#1e1e1e'; ctx.lineWidth = 3;
+    ctx.strokeRect(x+1.5, y+1.5, size-3, size-3);
+    const slot = chest.slots[i];
+    if (slot) {
+      drawItem(x, y, size, slot.id);
+      if (slot.count > 1) {
+        ctx.fillStyle = '#fff';
+        ctx.font = 'bold 14px Arial';
+        ctx.textAlign = 'right'; ctx.textBaseline = 'bottom';
+        ctx.fillText(slot.count, x + size - 4, y + size - 2);
+      }
+    }
+    chestRects.push({ x, y, w: size, h: size, idx: i });
+  }
+
+  const invY = gy + gh + 40;
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 20px Arial';
+  ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+  ctx.fillText('Твой инвентарь', gx, invY - 30);
+
+  const invRects = [];
+  for (let i = 0; i < INV_SLOTS; i++) {
+    const r = Math.floor(i / cols), c = i % cols;
+    const x = gx + pad + c * (size + pad);
+    const y = invY + r * (size + pad);
+    ctx.fillStyle = '#50505a'; ctx.fillRect(x, y, size, size);
+    ctx.strokeStyle = '#1e1e1e'; ctx.lineWidth = 3;
+    ctx.strokeRect(x+1.5, y+1.5, size-3, size-3);
+    const slot = w.inventory.slots[i];
+    if (slot) {
+      drawItem(x, y, size, slot.id);
+      if (slot.count > 1) {
+        ctx.fillStyle = '#fff';
+        ctx.font = 'bold 14px Arial';
+        ctx.textAlign = 'right'; ctx.textBaseline = 'bottom';
+        ctx.fillText(slot.count, x + size - 4, y + size - 2);
+      }
+    }
+    invRects.push({ x, y, w: size, h: size, idx: i });
+  }
+
+  ctx.fillStyle = '#ffe678';
+  ctx.font = 'bold 16px Arial';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(message, SCREEN_W/2, SCREEN_H - 70);
+
+  ctx.fillStyle = '#fff';
+  ctx.font = '14px Arial';
+  ctx.fillText('Клик по предмету — переложить. ESC — закрыть', SCREEN_W/2, SCREEN_H - 40);
+
+  uiButtons.push({ x: 0, y: 0, w: 0, h: 0, onClick: () => {} });
+  window._chestRects = chestRects;
+  window._invRects = invRects;
+}
+
+// доп. клик для сундука
+function chestClick(mx, my) {
+  const w = currentWorld;
+  const chest = chestOpen;
+  if (window._chestRects) {
+    for (const r of window._chestRects) {
+      if (mx >= r.x && mx <= r.x + r.w && my >= r.y && my <= r.y + r.h) {
+        const slot = chest.slots[r.idx];
+        if (slot) {
+          if (w.inventory.add(slot.id, slot.count)) {
+            chest.slots[r.idx] = null;
+            message = `Взято ${slot.count}`;
+          } else message = 'Инвентарь полон!';
+        }
+        return;
+      }
+    }
+  }
+  if (window._invRects) {
+    for (const r of window._invRects) {
+      if (mx >= r.x && mx <= r.x + r.w && my >= r.y && my <= r.y + r.h) {
+        const slot = w.inventory.slots[r.idx];
+        if (slot) {
+          if (chest.add(slot.id, slot.count)) {
+            w.inventory.slots[r.idx] = null;
+            message = `Положено ${slot.count}`;
+          } else message = 'Сундук полон!';
+        }
+        return;
+      }
+    }
+  }
+  // ESC-кнопка?
+  for (const b of uiButtons) {
+    if (mx >= b.x && mx <= b.x + b.w && my >= b.y && my <= b.y + b.h) {
+      b.onClick(); return;
+    }
+  }
+}
+
+function drawDeath() {
+  ctx.fillStyle = 'rgba(120,0,0,0.7)';
+  ctx.fillRect(0, 0, SCREEN_W, SCREEN_H);
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 64px Arial';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText('Ты погиб!', SCREEN_W/2, SCREEN_H/2 - 40);
+  ctx.font = 'bold 24px Arial';
+  ctx.fillText('Возврат в меню...', SCREEN_W/2, SCREEN_H/2 + 40);
+}
+
+// ============ ГЛАВНЫЙ ЦИКЛ ============
+let deathTimer = 0;
+
+function loop() {
+  if (STATE === 'menu') drawMenu();
+  else if (STATE === 'play') { updateGame(); drawGame(); }
+  else if (STATE === 'pause') { drawGame(); drawPause(); }
+  else if (STATE === 'craft') { drawGame(); drawCraft(); }
+  else if (STATE === 'chest') { drawGame(); drawChest(); }
+  else if (STATE === 'death') {
+    drawGame();
+    drawDeath();
+    deathTimer++;
+    if (deathTimer > 120) {
+      deathTimer = 0;
+      saveWorlds(worlds);
+      STATE = 'menu';
+    }
+  }
+  requestAnimationFrame(loop);
+}
+
+loop();
+</script>
+</body>
+</html>
